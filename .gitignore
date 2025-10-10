@@ -35,6 +35,7 @@ develop-eggs/
 dist/
 downloads/
 eggs/
+exp/
 .eggs/
 lib/
 lib64/
@@ -166,6 +167,8 @@ tests/data
 # outputs folder
 wandb
 dump.py
+exp
+data/
 
 docs/sources/source/test_build/
 

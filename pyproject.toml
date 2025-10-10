@@ -98,7 +98,12 @@ nanotron = [
   "tensorboardX"
 ]
 tensorboardX = ["tensorboardX"]
-vllm = ["vllm>=0.10.0,<0.10.2", "ray", "more_itertools"]
+vllm = [
+  "vllm>=0.10.0",
+  "ray",
+  "more_itertools",
+  "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.8cxx11abiTRUE-cp312-cp312-linux_x86_64.whl",
+]
 sglang = ["sglang"]
 quality = ["ruff>=v0.11.0","pre-commit"]
 tests = ["pytest>=7.4.0","deepdiff","pip>=25.2"]
@@ -120,6 +125,8 @@ multilingual = [
 math = ["latex2sympy2_extended==1.0.6"]
 wandb = ["wandb"]
 trackio = ["trackio"]
+mlflow = ["mlflow"]
+myevals = ["lighteval[multilingual,math,extended_tasks,vllm,mlflow]"]
 
 [project.urls]
 Homepage = "https://github.com/huggingface/lighteval"
@@ -129,3 +136,6 @@ Issues = "https://github.com/huggingface/lighteval/issues"
 
 [project.scripts]
 lighteval = "lighteval.__main__:app"
+
+[tool.uv]
+no-build-isolation-package = ["flash-attn"]
