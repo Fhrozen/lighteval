@@ -86,6 +86,14 @@ def vllm(
     from lighteval.models.vllm.vllm_model import VLLMModelConfig
     from lighteval.pipeline import ParallelismManager, Pipeline, PipelineParameters
 
+    if model_args.endswith(".yaml"):
+        with open(model_args, "r") as f:
+            metric_options = yaml.safe_load(f).get("metric_options", {})
+        model_config = VLLMModelConfig.from_path(model_args)
+    else:
+        metric_options = {}
+        model_config = VLLMModelConfig.from_args(model_args)
+
     evaluation_tracker = EvaluationTracker(
         output_dir=output_dir,
         results_path_template=results_path_template,
@@ -94,6 +102,7 @@ def vllm(
         push_to_tensorboard=push_to_tensorboard,
         public=public_run,
         hub_results_org=results_org,
+        mlflow_args=model_config,
         use_wandb=wandb,
     )
 
@@ -109,14 +118,6 @@ def vllm(
         remove_reasoning_tags=remove_reasoning_tags,
         reasoning_tags=reasoning_tags,
     )
-
-    if model_args.endswith(".yaml"):
-        with open(model_args, "r") as f:
-            metric_options = yaml.safe_load(f).get("metric_options", {})
-        model_config = VLLMModelConfig.from_path(model_args)
-    else:
-        metric_options = {}
-        model_config = VLLMModelConfig.from_args(model_args)
 
     pipeline = Pipeline(
         tasks=tasks,

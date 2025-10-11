@@ -143,6 +143,8 @@ class EvaluationTracker:
         save_details: bool = True,
         push_to_hub: bool = False,
         push_to_tensorboard: bool = False,
+        push_to_mlflow: bool = True,
+        mlflow_args: "GeneralArgs" = None,
         hub_results_org: str | None = "",
         tensorboard_metric_prefix: str = "eval",
         public: bool = False,
@@ -204,6 +206,50 @@ class EvaluationTracker:
                 resume="allow",
                 **wandb_kwargs,
             )
+
+        self.use_mlflow = push_to_mlflow
+        if push_to_mlflow:
+            self._nested_run = False
+            try:
+                import mlflow
+                self._mlflow = mlflow
+                self.setup_mlflow(mlflow_args)
+            except ImportError:
+                logger.error(f"Mlflow could not be loaded.")
+                self._mlflow = None
+
+    def setup_mlflow(self, args):
+        if self._mlflow is None:
+            return
+        self._tracking_uri = os.getenv("MLFLOW_TRACKING_URI", None)
+        self._experiment_name = os.getenv("MLFLOW_EXPERIMENT_NAME", None)
+        self._run_id = os.getenv("MLFLOW_RUN_ID", None)
+
+        if not self._mlflow.is_tracking_uri_set():
+            if self._tracking_uri:
+                self._mlflow.set_tracking_uri(self._tracking_uri)
+                logger.info(f"MLflow tracking URI is set to {self._tracking_uri}")
+            else:
+                logger.info(
+                    "Environment variable `MLFLOW_TRACKING_URI` is not provided and therefore will not be"
+                    " explicitly set."
+                )
+        else:
+            logger.info(f"MLflow tracking URI is set to {self._mlflow.get_tracking_uri()}")
+
+        if self._mlflow.active_run() is None or self._nested_run or self._run_id:
+            if self._experiment_name:
+                # Use of set_experiment() ensure that Experiment is created if not exists
+                self._mlflow.set_experiment(self._experiment_name)
+            self._mlflow.start_run(run_name=args.model_name, nested=self._nested_run)
+            logger.info(f"MLflow run started with run_id={self._mlflow.active_run().info.run_id}")
+            self._auto_end_run = True
+            self._mlflow.log_params(vars(args), synchronous=False)
+
+        mlflow_tags = os.getenv("MLFLOW_TAGS", None)
+        if mlflow_tags:
+            mlflow_tags = json.loads(mlflow_tags)
+            self._mlflow.set_tags(mlflow_tags)
 
     @property
     def results(self):
@@ -285,6 +331,12 @@ class EvaluationTracker:
         if self.should_push_results_to_tensorboard:
             self.push_to_tensorboard(
                 results=self.metrics_logger.metric_aggregated, details=self.details_logger.compiled_details
+            )
+
+        if self.use_mlflow:
+            self.push_to_mlflow(
+                results=results_dict,
+                details=details_datasets,
             )
 
     def push_to_wandb(self, results_dict: dict, details_datasets: dict) -> None:
@@ -745,3 +797,10 @@ class EvaluationTracker:
             f"Pushed to tensorboard at https://huggingface.co/{self.tensorboard_repo}/{output_dir_tb}/tensorboard"
             f" at global_step {global_step}"
         )
+
+    def push_to_mlflow(
+        self, results: dict[str, dict[str, float]], details: dict[str, DetailsLogger.CompiledDetail]
+    ) -> None:
+
+        self._ml_flow.end_run()
+        return

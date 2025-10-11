@@ -44,6 +44,15 @@ if [ -n ${model_args} ]; then
     _model_args+=",${model_args}"
 fi
 
+# Following are the kv_cache_memory for each model,
+# to avoid OOM during the logprobs prediction, with a GPU VRAM=12G.
+# | model-id   | kv_cache_memory_bytes | modality | gpu_memory_utilization |
+# | Model 0.3B | --         | text | 0.85 |
+# | Model 0.6B | 7410471372 | text |
+# | Model 1.7B | 5015367116 | text |
+# | Model 4B   | 3651455718 | text |
+
+
 lighteval vllm  \
     ${_model_args} \
     "local/base_llm.txt" \
@@ -68,19 +77,5 @@ lighteval vllm  \
 #         --model_args ${_model_args} \
 #         --output_path exp/
 # else
-
-
-
-#     # Following are the kv_cache_memory for each model,
-#     # to avoid OOM during the logprobs prediction, with a GPU VRAM=12G.
-#     # | model-id   | kv_cache_memory_bytes | modality |
-#     # | Model 0.3B | --         | text |
-#     # | Model 0.6B | 7410471372 | text |
-#     # | Model 1.7B | 5015367116 | text |
-#     # | Model 4B   | 3651455718 | text |
-
-    
-#     # --custom-tasks "./local/tasks.py" \
-# fi
 
 
