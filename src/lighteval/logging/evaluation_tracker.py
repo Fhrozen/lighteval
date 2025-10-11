@@ -818,7 +818,7 @@ class EvaluationTracker:
             bench_suite = None
             if ":" in task_name:
                 bench_suite = task_name.split(":")[0]  # e.g. MMLU
-                logger.info(f"bench_suite {bench_suite} in {task_name}")
+                # logger.info(f"bench_suite {bench_suite} in {task_name}")
                 for metric, value in values.items():
                     if "stderr" in metric:
                         continue
