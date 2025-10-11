@@ -30,7 +30,9 @@ from datetime import datetime
 from enum import Enum
 from io import BytesIO
 from pathlib import Path
+from typing import List
 
+import numpy as np
 import torch
 from datasets import Dataset, load_dataset
 from datasets.utils.metadata import MetadataConfigs
@@ -181,7 +183,7 @@ class EvaluationTracker:
 
         if use_wandb is True:
             try:
-                import trackio as wandb
+                import trackio as wandb  # type: ignore
 
                 logger.warning("Trackio was found available in your environment, using it instead of wandb")
                 self.wandb_project = os.environ.get("WANDB_PROJECT", None)
@@ -192,7 +194,7 @@ class EvaluationTracker:
                 }
 
             except ImportError:
-                import wandb
+                import wandb  # type: ignore
 
                 self.wandb_project = os.environ.get("WANDB_PROJECT", None)
                 wandb.login()
@@ -210,6 +212,7 @@ class EvaluationTracker:
         self.use_mlflow = push_to_mlflow
         if push_to_mlflow:
             self._nested_run = False
+            self._prefix = tensorboard_metric_prefix
             try:
                 import mlflow
                 self._mlflow = mlflow
@@ -335,7 +338,7 @@ class EvaluationTracker:
 
         if self.use_mlflow:
             self.push_to_mlflow(
-                results=results_dict,
+                results=self.metrics_logger.metric_aggregated,
                 details=details_datasets,
             )
 
@@ -801,6 +804,77 @@ class EvaluationTracker:
     def push_to_mlflow(
         self, results: dict[str, dict[str, float]], details: dict[str, DetailsLogger.CompiledDetail]
     ) -> None:
+        global_step = 0
+        prefix = self._prefix
+        
+        bench_averages = {}
+        logger.info(f"Pushing metrics to MLflow")
+        for name, values in results.items():
+            splited_name = name.split("|")
+            if len(splited_name) == 3:
+                _, task_name, _ = splited_name
+            else:
+                task_name = name
+            bench_suite = None
+            if ":" in task_name:
+                bench_suite = task_name.split(":")[0]  # e.g. MMLU
+                logger.info(f"bench_suite {bench_suite} in {task_name}")
+                for metric, value in values.items():
+                    if "stderr" in metric:
+                        continue
+                    if bench_suite not in bench_averages:
+                        bench_averages[bench_suite] = {}
+                    bench_averages[bench_suite][metric] = bench_averages[bench_suite].get(
+                        metric, []
+                    ) + [float(value)]
 
-        self._ml_flow.end_run()
+            _metrics = {}
+            for metric, value in values.items():
+                metric = re.sub(r"[^0-9A-Za-z_\-\.\ :/]", "_", metric)
+                if "stderr" in metric:
+                    metric = f"stderr_{prefix}/{task_name}/{metric}"
+                elif bench_suite is not None:
+                    metric = f"{prefix}_{bench_suite}/{task_name}/{metric}"
+                else:
+                    metric = f"{prefix}/{task_name}/{metric}"
+                _metrics[metric] = value
+            self._mlflow.log_metrics(metrics=_metrics, step=global_step)
+
+        # Tasks with subtasks
+        _metrics = {}
+        for name, values in bench_averages.items():
+            for metric, values in values.items():
+                _metrics[f"{prefix}/{name}/{metric}"] = sum(values) / len(values)
+        self._mlflow.log_metrics(metrics=_metrics, step=global_step)
+
+        for ds_name, _details in details.items():
+            data = _details.to_pandas()
+            ds_name = re.sub(r"[^0-9A-Za-z_\-\.\ :/]", "_", ds_name)
+            ds_name = ds_name.replace(":", "_")
+            # df <- model, content, outputs:
+            table = dict()
+            for idx, data_row in data.iterrows():
+                for prefix, subset in data_row.to_dict().items():
+                    # prefix: doc, 
+                    for suffix, value in subset.items():
+                        if "token" in suffix:
+                            continue
+                        if "logprobs" in suffix:
+                            continue
+                        if "logits" in suffix:
+                            continue
+                        key = f"{prefix}_{suffix}"
+                        if key not in table:
+                            if idx > 0:
+                                continue
+                            table[key] = []
+                        if isinstance(value, np.ndarray):
+                            value = value.tolist()
+                        if isinstance(value, List) and len(value) == 1:
+                            value = value[0]
+                        table[key].append(value)
+
+            self._mlflow.log_table(data=table, artifact_file=f"{ds_name}.json")
+
+        self._mlflow.end_run()
         return
