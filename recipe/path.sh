@@ -39,3 +39,6 @@ min() {
 export -f log
 export -f min
 
+if [ -f "./envs.sh" ]; then
+    source ./envs.sh
+fi

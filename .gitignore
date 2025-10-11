@@ -186,3 +186,4 @@ prod_env
 logs
 _logs
 outputs
+envs.sh

@@ -46,7 +46,8 @@ fi
 
 lighteval vllm  \
     ${_model_args} \
-    "leaderboard|truthfulqa:mc|0" \
+    "local/base_llm.txt" \
+    --custom-tasks "local/tasks.py" \
     --save-details \
     --output-dir exp/
 
