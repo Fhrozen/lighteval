@@ -840,6 +840,7 @@ class EvaluationTracker:
                     metric = f"{prefix}_{bench_suite}/{task_name}/{metric}"
                 else:
                     metric = f"{prefix}/{task_name}/{metric}"
+                metric = metric.replace("+", "p")
                 _metrics[metric] = value
             self._mlflow.log_metrics(metrics=_metrics, step=global_step)
 
@@ -847,6 +848,9 @@ class EvaluationTracker:
         _metrics = {}
         for name, values in bench_averages.items():
             for metric, values in values.items():
+                metric = metric.replace("+", "p")
+                metric = metric.replace("@", "-")
+                metric = metric.replace("=", ".")
                 _metrics[f"{prefix}/{name}/{metric}"] = sum(values) / len(values)
         self._mlflow.log_metrics(metrics=_metrics, step=global_step)
 

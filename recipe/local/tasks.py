@@ -25,6 +25,9 @@ lighteval vllm "model_name=HuggingFaceTB/SmolLM3-3B,dtype=bfloat16,max_model_len
 """
 from functools import partial
 import numpy as np
+from itertools import permutations
+
+from langcodes import standardize_tag  # type: ignore
 
 import lighteval.tasks.default_prompts as prompt
 from lighteval.metrics.dynamic_metrics import (
@@ -38,8 +41,9 @@ from lighteval.metrics.metrics import Metrics
 from lighteval.metrics.metrics_sample import (
     JudgeLLM,
 )
-from lighteval.metrics.normalizations import LogProbCharNorm, LogProbTokenNorm
+from lighteval.metrics.normalizations import LogProbCharNorm, LogProbPMINorm, LogProbTokenNorm
 from lighteval.metrics.utils.metric_utils import (
+    SampleLevelMetric,
     SampleLevelMetricGrouping,
 )
 from lighteval.tasks.default_prompts import LETTER_INDICES
@@ -54,6 +58,7 @@ from lighteval.tasks.extended.mix_eval.main import (
 from lighteval.tasks.lighteval_task import LightevalTaskConfig
 from lighteval.tasks.multilingual.adapters import winogrand_adapter
 from lighteval.tasks.multilingual.tasks import TASKS_TABLE as ML_TASKS_TABLE
+from lighteval.tasks.multilingual.tasks import flores_adapter, flores_200_languages
 from lighteval.tasks.multilingual.utils.task_utils import get_metrics_for_formulation
 from lighteval.tasks.requests import Doc
 from lighteval.tasks.templates.boolq import get_boolq_prompt_function
@@ -65,8 +70,11 @@ from lighteval.tasks.templates.utils.formulation import (
     HybridFormulation,
     MCFFormulation,
 )
-from lighteval.utils.language import Language
+from lighteval.utils.language import Language, manage_duplicate_language_codes
 from lighteval.utils.utils import remove_reasoning_tags
+
+from lighteval.tasks.templates.translation import get_translation_prompt_function
+
 
 TASKS_TABLE = []
 TASKS_TABLE.extend(ML_TASKS_TABLE)
@@ -150,7 +158,6 @@ hellaswag_tasks = [
         ),
         hf_repo="Rowan/hellaswag",
         hf_subset="default",
-        hf_revision="6002345709e0801764318f06bf06ce1e7d1a1fe3",
         evaluation_splits=["validation"],
         hf_avail_splits=["train", "validation"],
         # trust_dataset=True,
@@ -225,7 +232,6 @@ winogrande_tasks = [
         hf_repo="allenai/winogrande",
         hf_subset="winogrande_xl",
         # trust_dataset=True,
-        hf_revision="85ac5b5a3b7a930e22d590176e39460400d19e41",
         hf_avail_splits=["train", "validation"],
         evaluation_splits=["validation"],
         few_shots_split="train",
@@ -249,9 +255,8 @@ piqa_tasks = [
             formulation=formulation,
         ),
         suite=["custom"],
-        hf_repo="ybisk/piqa",
-        hf_revision="2e8ac2dffd59bac8c3c6714948f4c551a0848bb0",
-        hf_subset="plain_text",
+        hf_repo="baber/piqa",
+        hf_subset="default",
         # trust_dataset=True,
         hf_avail_splits=["train", "validation"],
         evaluation_splits=["validation"],
@@ -386,7 +391,7 @@ TASKS_TABLE.extend(triviqa_tasks)
 def bbh_prompt(line, task_name: str = None):
     return Doc(
         task_name=task_name,
-        query="Question: " + line["input"] + "\nAnswer: ",
+        query="Question: " + line["question"] + "\nAnswer: ",
         choices=[line["target"]],
         gold_index=0,
     )
@@ -410,13 +415,12 @@ bbh_tasks = [
         name=f"bbh:{subset}",
         prompt_function=bbh_prompt,
         suite=["custom"],
-        hf_repo="lighteval/big_bench_hard",
+        hf_repo="Joschka/big_bench_hard",
         hf_subset=subset,
-        hf_revision="80610173426f05e6f1448f047e2db4840a7dd899",
         metrics=[Metrics.exact_match],
-        hf_avail_splits=["train"],
-        evaluation_splits=["train"],
-        few_shots_split="train",
+        hf_avail_splits=[subset],
+        evaluation_splits=[subset],
+        generation_size=4096,
         # trust_dataset=True,
         stop_sequence=["Question:"],
     )
@@ -444,17 +448,23 @@ gsm8k_tasks = [
 TASKS_TABLE.extend(gsm8k_tasks)
 
 # MATH tasks
-latex_gold_metric = MultilingualExtractiveMatchMetric(
-    language=Language.ENGLISH,
-    fallback_mode="first_match",
-    precision=5,
-    gold_extraction_target=(LatexExtractionConfig(),),
-    # Match boxed first before trying other regexes
-    pred_extraction_target=(
-        ExprExtractionConfig(),
-        LatexExtractionConfig(boxed_match_priority=0),
+latex_gold_metric = SampleLevelMetric(
+    metric_name="extractive_match",
+    sample_level_fn=MultilingualExtractiveMatchMetric(
+        language=Language.ENGLISH,
+        fallback_mode="first_match",
+        precision=5,
+        gold_extraction_target=(LatexExtractionConfig(),),
+        # Match boxed first before trying other regexes
+        pred_extraction_target=(
+            ExprExtractionConfig(),
+            LatexExtractionConfig(boxed_match_priority=0),
+        ),
+        aggregation_function=max,
     ),
-    aggregation_function=max,
+    category=SamplingMethod.GENERATIVE,
+    corpus_level_fn=np.mean,
+    higher_is_better=True,
 )
 
 math_tasks = [
@@ -485,6 +495,193 @@ math_tasks = [
     ]
 ]
 TASKS_TABLE.extend(math_tasks)
+
+
+_no_avail_global = [
+    "moral_scenarios",
+    "world_religions",
+]
+GLOBAL_MMLU_SUBSETS = [x for x in MMLU_SUBSETS if x not in _no_avail_global]
+# Translated MMLU using both professional and non-professional translators. Contains tags for cultural sensitivity.
+# CA: Cultural Agnostic
+# CS: Cultural Specific
+# UNK: Not annotated
+# ALL: All of the above
+# https://huggingface.co/papers/2412.03304
+global_mmlu_tasks = [
+    LightevalTaskConfig(
+        name=f"global_mmlu_{sensitivity_label.lower()}_{language.value}_{formulation.name.lower()}:{subset}",
+        prompt_function=get_mcq_prompt_function(
+            language,
+            lambda line: {
+                "question": line["question"],
+                "choices": [line["option_a"], line["option_b"], line["option_c"], line["option_d"]],
+                "gold_idx": LETTER_INDICES.index(line["answer"]),
+            },
+            formulation=formulation,
+        ),
+        suite=("custom",),
+        hf_repo="CohereForAI/Global-MMLU",
+        hf_subset=standardize_tag(language.value),
+        evaluation_splits=("test",),
+        few_shots_split="dev",
+        hf_filter=partial(
+            lambda subset, sensitivity_label, x: x["subject"].lower() == subset
+            and (
+                sensitivity_label == "ALL" or sensitivity_label in x["cultural_sensitivity_label"].replace("-", "UNK")
+            )
+            and all(x[f"option_{opt}"] is not None and x[f"option_{opt}"].strip() for opt in "abcd"),
+            subset,
+            sensitivity_label,
+        ),
+        metrics=get_metrics_for_formulation(
+            formulation,
+            [
+                LogLikelihoodAccMetric(normalization=LogProbTokenNorm()),
+                LogLikelihoodAccMetric(normalization=LogProbCharNorm()),
+                LogLikelihoodAccMetric(normalization=LogProbPMINorm()),
+            ],
+        ),
+    )
+    for subset in GLOBAL_MMLU_SUBSETS
+    for language in [
+        Language.AMHARIC,
+        Language.ARABIC,
+        Language.BENGALI,
+        Language.CHINESE,
+        Language.CZECH,
+        Language.GERMAN,
+        Language.ENGLISH,
+        Language.SPANISH,
+        Language.FRENCH,
+        Language.HEBREW,
+        Language.HINDI,
+        Language.INDONESIAN,
+        Language.ITALIAN,
+        Language.JAPANESE,
+        Language.KOREAN,
+        Language.MALAY,
+        Language.DUTCH,
+        Language.NORWEGIAN,
+        Language.POLISH,
+        Language.PORTUGUESE,
+        Language.ROMANIAN,
+        Language.RUSSIAN,
+        Language.SERBIAN,
+        Language.SWEDISH,
+        Language.SWAHILI,
+        Language.TAMIL,
+        Language.TELUGU,
+        Language.THAI,
+        Language.TURKISH,
+        Language.UKRAINIAN,
+        Language.URDU,
+        Language.VIETNAMESE,
+        Language.YORUBA,
+        Language.ZULU,
+    ]
+    for formulation in [
+        MCFFormulation(),
+        CFFormulation(),
+        HybridFormulation(),
+    ]
+    for sensitivity_label in ["ALL", "CA", "CS", "UNK"]
+]
+TASKS_TABLE.extend(global_mmlu_tasks)
+
+
+flores200_tasks = [
+    LightevalTaskConfig(
+        name=f"flores200:{lang1}-{lang2}",
+        prompt_function=get_translation_prompt_function(
+            source_language=Language(manage_duplicate_language_codes(lang1.split("_")[0])),
+            target_language=Language(manage_duplicate_language_codes(lang2.split("_")[0])),
+            adapter=flores_adapter(lang1, lang2),
+            formulation=CFFormulation(),
+        ),
+        suite=("custom",),
+        hf_repo="Fhrozen/flores",
+        hf_subset=f"{lang1}-{lang2}",
+        hf_avail_splits=["dev", "devtest"],
+        evaluation_splits=["devtest"],
+        few_shots_split="dev",
+        few_shots_select=None,
+        generation_size=300,
+        metrics=[Metrics.chrf_plus, Metrics.bleu, Metrics.bleu_1, Metrics.bleu_4],
+        stop_sequence=["\n"],
+        version=0,
+    )
+    for (lang1, lang2) in permutations(flores_200_languages, 2)
+]
+TASKS_TABLE.extend(flores200_tasks)
+
+
+mlmm_hellaswag_tasks = [
+    LightevalTaskConfig(
+        name=f"mlmm_hellaswag_{lang.value}_{formulation.name.lower()}",
+        suite=["custom"],
+        prompt_function=get_hellaswag_prompt_function(
+            language=lang,
+            adapter=lambda line: {
+                # We don't use activity_label as they are not available
+                "ctx_a": line["ctx_a"],
+                "ctx_b": line["ctx_b"],
+                "continuations": line["endings"],
+                "gold_idx": int(line["label"]),
+            },
+            formulation=formulation,
+        ),
+        hf_repo="alexandrainst/m_hellaswag",
+        hf_subset=standardize_tag(lang.value),
+        evaluation_splits=["val"],
+        hf_avail_splits=["val"],
+        metrics=get_metrics_for_formulation(
+            formulation,
+            [
+                LogLikelihoodAccMetric(normalization=LogProbTokenNorm()),
+                LogLikelihoodAccMetric(normalization=LogProbCharNorm()),
+            ],
+        ),
+    )
+    for lang in [
+        Language.ARABIC,
+        Language.BENGALI,
+        Language.CATALAN,
+        Language.DANISH,
+        Language.GERMAN,
+        Language.SPANISH,
+        Language.BASQUE,
+        Language.FRENCH,
+        Language.GUJARATI,
+        Language.HINDI,
+        Language.CROATIAN,
+        Language.HUNGARIAN,
+        Language.ARMENIAN,
+        Language.INDONESIAN,
+        Language.ICELANDIC,
+        Language.ITALIAN,
+        Language.KANNADA,
+        Language.MALAYALAM,
+        Language.MARATHI,
+        Language.NORWEGIAN,
+        Language.NEPALI,
+        Language.DUTCH,
+        Language.PORTUGUESE,
+        Language.ROMANIAN,
+        Language.RUSSIAN,
+        Language.SLOVAK,
+        Language.SERBIAN,
+        Language.SWEDISH,
+        Language.TAMIL,
+        Language.TELUGU,
+        Language.UKRAINIAN,
+        Language.VIETNAMESE,
+        Language.CHINESE,
+    ]
+    for formulation in [MCFFormulation(), CFFormulation(), HybridFormulation()]
+]
+TASKS_TABLE.extend(mlmm_hellaswag_tasks)
+
 
 #---------------------
 # INSTRUCT MODEL EVALS

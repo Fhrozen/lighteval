@@ -52,6 +52,8 @@ fi
 # | Model 1.7B | 5015367116 | text |
 # | Model 4B   | 3651455718 | text |
 
+# lighteval|gpqa|5|0 < requires gpu utilization of 0.78
+# custom|bbh|3|0 < takes longer time currently
 
 lighteval vllm  \
     ${_model_args} \
