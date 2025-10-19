@@ -391,7 +391,7 @@ TASKS_TABLE.extend(triviqa_tasks)
 def bbh_prompt(line, task_name: str = None):
     return Doc(
         task_name=task_name,
-        query="Question: " + line["question"] + "\nAnswer: ",
+        query="Question: " + line["input"] + "\nAnswer: ",
         choices=[line["target"]],
         gold_index=0,
     )
@@ -415,12 +415,13 @@ bbh_tasks = [
         name=f"bbh:{subset}",
         prompt_function=bbh_prompt,
         suite=["custom"],
-        hf_repo="Joschka/big_bench_hard",
+        hf_repo="Fhrozen/big_bench_hard",
         hf_subset=subset,
         metrics=[Metrics.exact_match],
-        hf_avail_splits=[subset],
-        evaluation_splits=[subset],
-        generation_size=4096,
+        hf_avail_splits=["train"],
+        evaluation_splits=["train"],
+        generation_size=128,
+        few_shots_split="train",
         # trust_dataset=True,
         stop_sequence=["Question:"],
     )

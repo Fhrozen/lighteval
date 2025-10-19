@@ -31,6 +31,7 @@ from enum import Enum
 from io import BytesIO
 from pathlib import Path
 from typing import List
+import tqdm
 
 import numpy as np
 import torch
@@ -812,7 +813,7 @@ class EvaluationTracker:
         
         bench_averages = {}
         logger.info(f"Pushing metrics to MLflow")
-        for name, values in results.items():
+        for name, values in tqdm.tqdm(results.items(), desc="Pushing overall metrics"):
             splited_name = name.split("|")
             if len(splited_name) == 3:
                 _, task_name, _ = splited_name
@@ -846,6 +847,7 @@ class EvaluationTracker:
 
         # Tasks with subtasks
         _metrics = {}
+        logger.info("Pushing average metrics")
         for name, values in bench_averages.items():
             for metric, values in values.items():
                 metric = metric.replace("+", "p")
@@ -854,7 +856,8 @@ class EvaluationTracker:
                 _metrics[f"{prefix}/{name}/{metric}"] = sum(values) / len(values)
         self._mlflow.log_metrics(metrics=_metrics, step=global_step)
 
-        for ds_name, _details in details.items():
+        logger.info("Pushing details")
+        for ds_name, _details in tqdm.tqdm(details.items(), desc="Pushing details"):
             data = _details.to_pandas()
             ds_name = re.sub(r"[^0-9A-Za-z_\-\.\ :/]", "_", ds_name)
             ds_name = ds_name.replace(":", "_")
@@ -880,8 +883,13 @@ class EvaluationTracker:
                         if isinstance(value, List) and len(value) == 1:
                             value = value[0]
                         table[key].append(value)
-
-            self._mlflow.log_table(data=table, artifact_file=f"{ds_name}.json")
+            if table["doc_sampling_methods"][0] == "LOGPROBS":
+                continue
+            try:
+                self._mlflow.log_table(data=table, artifact_file=f"{ds_name}.json")
+            except:
+                logger.error("Could not save %s.json on mlflow server. Skipping", ds_name)
+                raise
 
         self._mlflow.end_run()
         return
